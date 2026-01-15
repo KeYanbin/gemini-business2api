@@ -41,6 +41,19 @@ def require_login(redirect_to_login: bool = True):
         @wraps(func)
         async def wrapper(*args, request: Request, **kwargs):
             if not is_logged_in(request):
+                # 检查是否是 API 请求（Accept: application/json 或 XHR）
+                accept = request.headers.get("accept", "")
+                x_requested_with = request.headers.get("x-requested-with", "")
+                is_api_request = (
+                    "application/json" in accept or
+                    x_requested_with.lower() == "xmlhttprequest" or
+                    request.method in ("PUT", "DELETE", "PATCH")
+                )
+                
+                if is_api_request:
+                    # API 请求返回 401 JSON 错误
+                    raise HTTPException(401, "未登录，请先登录")
+                
                 if redirect_to_login:
                     accept_header = (request.headers.get("accept") or "").lower()
                     wants_html = "text/html" in accept_header or request.url.path.endswith("/html")

@@ -303,16 +303,22 @@ async def download_image_with_jwt(
     raise HTTPException(500, "Image download failed unexpectedly")
 
 
-def save_image_to_hf(image_data: bytes, chat_id: str, file_id: str, mime_type: str, base_url: str, image_dir: str) -> str:
-    """保存图片到持久化存储,返回完整的公开URL"""
-    ext_map = {"image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif", "image/webp": ".webp"}
-    ext = ext_map.get(mime_type, ".png")
+def save_media_file(media_data: bytes, chat_id: str, file_id: str, mime_type: str, base_url: str, media_dir: str) -> str:
+    """保存媒体文件（图片/视频）到持久化存储,返回完整的公开URL"""
+    ext_map = {
+        "image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif", "image/webp": ".webp",
+        "video/mp4": ".mp4", "video/webm": ".webm", "video/quicktime": ".mov"
+    }
+    ext = ext_map.get(mime_type, ".png" if mime_type.startswith("image") else ".mp4")
 
     filename = f"{chat_id}_{file_id}{ext}"
-    save_path = os.path.join(image_dir, filename)
+    save_path = os.path.join(media_dir, filename)
 
-    # 目录已在启动时创建,无需重复创建
     with open(save_path, "wb") as f:
-        f.write(image_data)
+        f.write(media_data)
 
     return f"{base_url}/images/{filename}"
+
+
+# 保持向后兼容
+save_image_to_hf = save_media_file

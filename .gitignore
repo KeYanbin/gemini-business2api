@@ -36,6 +36,13 @@ ENV/
 .env
 *.log
 
+# Register machine specific
+register_config.json
+data/accounts.db
+debug_*.html
+.claude/
+.spec-workflow/
+
 # Generated files
 data/
 logs/

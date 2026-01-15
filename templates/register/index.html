@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gemini Business 注册机</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f5f5f7;
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container { max-width: 1200px; margin: 0 auto; }
+        h1 {
+            font-size: 24px;
+            font-weight: 600;
+            color: #1d1d1f;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .card {
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 16px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        .card h3 {
+            font-size: 14px;
+            font-weight: 600;
+            color: #1d1d1f;
+            margin-bottom: 16px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #f0f0f2;
+        }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+        @media (max-width: 768px) { .grid { grid-template-columns: 1fr; } }
+        .setting-item { margin-bottom: 14px; }
+        .setting-item label {
+            display: block;
+            font-size: 12px;
+            font-weight: 500;
+            color: #6b6b6b;
+            margin-bottom: 6px;
+        }
+        .setting-item input[type="text"],
+        .setting-item input[type="number"],
+        .setting-item input[type="password"] {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid #d2d2d7;
+            border-radius: 8px;
+            font-size: 13px;
+            transition: border-color 0.2s;
+        }
+        .setting-item input:focus {
+            outline: none;
+            border-color: #0071e3;
+        }
+        .setting-item .hint {
+            font-size: 11px;
+            color: #86868b;
+            margin-top: 4px;
+        }
+        .checkbox-label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+            color: #1d1d1f;
+            cursor: pointer;
+        }
+        .checkbox-label input { width: auto; }
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .btn-primary {
+            background: #0071e3;
+            color: white;
+        }
+        .btn-primary:hover { background: #0077ed; }
+        .btn-danger {
+            background: #ff3b30;
+            color: white;
+        }
+        .btn-danger:hover { background: #ff453a; }
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .status-panel {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 16px;
+        }
+        .status-panel h3 {
+            color: white;
+            border-bottom-color: rgba(255,255,255,0.2);
+        }
+        .status-grid {
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 16px;
+            margin-top: 16px;
+        }
+        .status-item {
+            text-align: center;
+        }
+        .status-item .label {
+            font-size: 11px;
+            opacity: 0.8;
+            margin-bottom: 4px;
+        }
+        .status-item .value {
+            font-size: 20px;
+            font-weight: 600;
+        }
+        .logs-container {
+            background: #1a1a1a;
+            border-radius: 8px;
+            padding: 12px;
+            height: 300px;
+            overflow-y: auto;
+            font-family: 'SF Mono', Consolas, monospace;
+            font-size: 11px;
+            color: #e0e0e0;
+        }
+        .log-entry { margin-bottom: 4px; line-height: 1.5; }
+        .log-time { color: #6b6b6b; }
+        .log-info { color: #10b981; }
+        .log-warn { color: #f59e0b; }
+        .log-error { color: #ef4444; }
+        .actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 16px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🤖 Gemini Business 注册机</h1>
+
+        <!-- 状态面板 -->
+        <div class="status-panel">
+            <h3>运行状态: <span id="status-text">空闲</span></h3>
+            <div class="status-grid">
+                <div class="status-item">
+                    <div class="label">进度</div>
+                    <div class="value"><span id="stat-current">0</span> / <span id="stat-total">0</span></div>
+                </div>
+                <div class="status-item">
+                    <div class="label">成功</div>
+                    <div class="value" id="stat-success">0</div>
+                </div>
+                <div class="status-item">
+                    <div class="label">失败</div>
+                    <div class="value" id="stat-failed">0</div>
+                </div>
+                <div class="status-item">
+                    <div class="label">耗时</div>
+                    <div class="value" id="stat-elapsed">0s</div>
+                </div>
+                <div class="status-item">
+                    <div class="label">成功率</div>
+                    <div class="value" id="stat-rate">-</div>
+                </div>
+            </div>
+            <div class="actions">
+                <button class="btn btn-primary" id="btn-start" onclick="startRegister()">▶️ 开始注册</button>
+                <button class="btn btn-danger" id="btn-stop" onclick="stopRegister()" disabled>⏹️ 停止</button>
+            </div>
+        </div>
+
+        <div class="grid">
+            <!-- 远程服务器配置 -->
+            <div class="card">
+                <h3>🌐 远程服务器配置</h3>
+                <div class="setting-item">
+                    <label>服务器地址</label>
+                    <input type="text" id="remote-url" placeholder="https://your-server.com 或 http://ip:7860">
+                    <div class="hint">留空则不上传到远程服务器</div>
+                </div>
+                <div class="setting-item">
+                    <label>Admin Key</label>
+                    <input type="password" id="remote-key" placeholder="远程服务器的 ADMIN_KEY">
+                </div>
+                <div class="setting-item">
+                    <label>Path Prefix (可选)</label>
+                    <input type="text" id="remote-prefix" placeholder="如果服务器配置了 PATH_PREFIX">
+                </div>
+            </div>
+
+            <!-- 注册配置 -->
+            <div class="card">
+                <h3>⚙️ 注册配置</h3>
+                <div class="setting-item">
+                    <label>注册数量</label>
+                    <input type="number" id="total-accounts" min="1" max="100" value="10">
+                </div>
+                <div class="setting-item">
+                    <label>并发线程数</label>
+                    <input type="number" id="parallel-workers" min="1" max="10" value="5">
+                    <div class="hint">建议 1-5 个，过多可能触发限制</div>
+                </div>
+                <div class="setting-item">
+                    <label>邮件 API 地址</label>
+                    <input type="text" id="mail-api" value="https://mail.chatgpt.org.uk">
+                </div>
+                <div class="setting-item">
+                    <label>邮件 API 密钥</label>
+                    <input type="text" id="mail-key" value="gpt-test">
+                </div>
+                <div class="setting-item">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="save-local" checked>
+                        同时保存到本地数据库
+                    </label>
+                </div>
+                <button class="btn btn-primary" onclick="saveConfig()" style="width: 100%; margin-top: 8px;">💾 保存配置</button>
+            </div>
+        </div>
+
+        <!-- 日志 -->
+        <div class="card">
+            <h3>📋 实时日志</h3>
+            <div class="logs-container" id="logs">
+                <div style="color: #6b6b6b;">等待启动...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let pollingInterval = null;
+
+        async function loadConfig() {
+            try {
+                const resp = await fetch('/api/config');
+                const config = await resp.json();
+                document.getElementById('remote-url').value = config.remote_api_url || '';
+                document.getElementById('remote-key').value = config.remote_admin_key || '';
+                document.getElementById('remote-prefix').value = config.remote_path_prefix || '';
+                document.getElementById('total-accounts').value = config.total_accounts || 10;
+                document.getElementById('parallel-workers').value = config.parallel_workers || 5;
+                document.getElementById('mail-api').value = config.mail_api || '';
+                document.getElementById('mail-key').value = config.mail_key || '';
+                document.getElementById('save-local').checked = config.save_to_local_db !== false;
+            } catch (e) {
+                console.error('加载配置失败:', e);
+            }
+        }
+
+        async function saveConfig() {
+            const config = {
+                remote_api_url: document.getElementById('remote-url').value,
+                remote_admin_key: document.getElementById('remote-key').value,
+                remote_path_prefix: document.getElementById('remote-prefix').value,
+                total_accounts: parseInt(document.getElementById('total-accounts').value) || 10,
+                parallel_workers: parseInt(document.getElementById('parallel-workers').value) || 5,
+                mail_api: document.getElementById('mail-api').value,
+                mail_key: document.getElementById('mail-key').value,
+                save_to_local_db: document.getElementById('save-local').checked
+            };
+            try {
+                const resp = await fetch('/api/config', {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(config)
+                });
+                const result = await resp.json();
+                alert(result.message);
+            } catch (e) {
+                alert('保存失败: ' + e.message);
+            }
+        }
+
+        async function startRegister() {
+            await saveConfig();
+            try {
+                const resp = await fetch('/api/start', {method: 'POST'});
+                const result = await resp.json();
+                if (result.status === 'success') {
+                    document.getElementById('btn-start').disabled = true;
+                    document.getElementById('btn-stop').disabled = false;
+                    startPolling();
+                } else {
+                    alert(result.message);
+                }
+            } catch (e) {
+                alert('启动失败: ' + e.message);
+            }
+        }
+
+        async function stopRegister() {
+            try {
+                await fetch('/api/stop', {method: 'POST'});
+            } catch (e) {
+                alert('停止失败: ' + e.message);
+            }
+        }
+
+        function startPolling() {
+            if (pollingInterval) clearInterval(pollingInterval);
+            updateStatus();
+            pollingInterval = setInterval(updateStatus, 1000);
+        }
+
+        async function updateStatus() {
+            try {
+                const resp = await fetch('/api/status');
+                const status = await resp.json();
+                
+                const statusMap = {'idle': '空闲', 'running': '运行中', 'stopping': '正在停止'};
+                document.getElementById('status-text').textContent = statusMap[status.status] || status.status;
+                document.getElementById('stat-current').textContent = status.current;
+                document.getElementById('stat-total').textContent = status.total;
+                document.getElementById('stat-success').textContent = status.success;
+                document.getElementById('stat-failed').textContent = status.failed;
+                document.getElementById('stat-elapsed').textContent = status.elapsed_seconds + 's';
+                
+                const total = status.success + status.failed;
+                document.getElementById('stat-rate').textContent = total > 0 ? Math.round(status.success / total * 100) + '%' : '-';
+                
+                // 更新日志
+                const logsDiv = document.getElementById('logs');
+                if (status.logs && status.logs.length > 0) {
+                    logsDiv.innerHTML = status.logs.map(log => {
+                        const levelClass = log.level === 'ERROR' ? 'log-error' : log.level === 'WARN' ? 'log-warn' : 'log-info';
+                        return `<div class="log-entry"><span class="log-time">[${log.time}]</span> <span class="${levelClass}">[${log.level}]</span> ${log.message}</div>`;
+                    }).join('');
+                    logsDiv.scrollTop = logsDiv.scrollHeight;
+                }
+                
+                // 更新按钮状态
+                if (status.status === 'running' || status.status === 'stopping') {
+                    document.getElementById('btn-start').disabled = true;
+                    document.getElementById('btn-stop').disabled = status.status === 'stopping';
+                } else {
+                    document.getElementById('btn-start').disabled = false;
+                    document.getElementById('btn-stop').disabled = true;
+                    if (pollingInterval) {
+                        clearInterval(pollingInterval);
+                        pollingInterval = null;
+                    }
+                }
+            } catch (e) {
+                console.error('获取状态失败:', e);
+            }
+        }
+
+        // 页面加载
+        loadConfig();
+        updateStatus();
+    </script>
+</body>
+</html>
