@@ -344,4 +344,79 @@ let currentConfig = null;
             // 页面加载时自动加载设置
             document.addEventListener('DOMContentLoaded', function() {
                 loadSettings();
+                
+                // 每30秒自动刷新账户状态
+                setInterval(refreshAccountStatus, 30000);
             });
+
+            // ========== 账户状态实时刷新 ==========
+            async function refreshAccountStatus() {
+                try {
+                    const response = await fetch(`/${window.ADMIN_PATH}/accounts`);
+                    const data = await handleApiResponse(response);
+                    
+                    // 更新账户数量
+                    document.getElementById('account-count').textContent = data.total;
+                    
+                    // 重新渲染账户表格
+                    const container = document.getElementById('account-table-container');
+                    if (data.accounts && data.accounts.length > 0) {
+                        container.innerHTML = renderAccountTable(data.accounts);
+                    } else {
+                        container.innerHTML = '<div style="color: #6b6b6b; padding: 20px; text-align: center;">暂无账户</div>';
+                    }
+                } catch (error) {
+                    console.error('刷新账户状态失败:', error);
+                }
+            }
+
+            function renderAccountTable(accounts) {
+                let html = '<table class="account-table"><thead><tr>';
+                html += '<th>账户ID</th><th>状态</th><th>剩余时间</th><th>对话次数</th><th>冷却</th><th>操作</th>';
+                html += '</tr></thead><tbody>';
+                
+                for (const acc of accounts) {
+                    // 状态颜色
+                    let statusColor = '#4caf50';  // 绿色-正常
+                    let statusText = acc.status || '正常';
+                    
+                    if (acc.disabled) {
+                        statusColor = '#9e9e9e';
+                        statusText = '已禁用';
+                    } else if (!acc.is_available) {
+                        statusColor = '#f44336';
+                        statusText = '不可用';
+                    } else if (acc.status === '已过期') {
+                        statusColor = '#f44336';
+                    } else if (acc.status === '即将过期') {
+                        statusColor = '#ff9800';
+                    }
+                    
+                    // 冷却信息
+                    let cooldownText = '-';
+                    if (acc.cooldown_seconds > 0) {
+                        cooldownText = `${acc.cooldown_seconds}s (${acc.cooldown_reason || '冷却中'})`;
+                    } else if (acc.cooldown_seconds === -1) {
+                        cooldownText = '永久禁用';
+                    }
+                    
+                    html += '<tr>';
+                    html += `<td style="font-family: monospace; font-size: 11px;">${acc.id}</td>`;
+                    html += `<td><span style="color: ${statusColor}; font-weight: 500;">${statusText}</span></td>`;
+                    html += `<td>${acc.remaining_display || '-'}</td>`;
+                    html += `<td>${acc.conversation_count || 0}</td>`;
+                    html += `<td style="font-size: 11px;">${cooldownText}</td>`;
+                    html += '<td>';
+                    if (acc.disabled) {
+                        html += `<button class="btn btn-small" onclick="enableAccount('${acc.id}')">启用</button>`;
+                    } else {
+                        html += `<button class="btn btn-small" onclick="disableAccount('${acc.id}')">禁用</button>`;
+                    }
+                    html += ` <button class="btn btn-small btn-danger" onclick="deleteAccount('${acc.id}')">删除</button>`;
+                    html += '</td>';
+                    html += '</tr>';
+                }
+                
+                html += '</tbody></table>';
+                return html;
+            }

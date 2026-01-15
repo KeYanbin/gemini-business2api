@@ -16,13 +16,29 @@ from fastapi import HTTPException
 if TYPE_CHECKING:
     from core.jwt import JWTManager
 
+# 导入数据库模块
+from core.database import (
+    init_database,
+    migrate_from_json,
+    save_accounts as db_save_accounts,
+    load_accounts as db_load_accounts,
+    delete_account_by_id as db_delete_account,
+    update_account_status as db_update_status,
+    upsert_accounts as db_upsert_accounts,
+    get_db_path
+)
+
 logger = logging.getLogger(__name__)
 
-# 配置文件路径 - 自动检测环境
+# 配置文件路径 - 自动检测环境（保留用于兼容和迁移）
 if os.path.exists("/data"):
     ACCOUNTS_FILE = "/data/accounts.json"  # HF Pro 持久化
 else:
     ACCOUNTS_FILE = "data/accounts.json"  # 本地存储（统一到 data 目录）
+
+# 初始化数据库并迁移
+init_database()
+migrate_from_json()
 
 
 @dataclass
@@ -311,17 +327,16 @@ class MultiAccountManager:
         return account
 
 
-# ---------- 配置文件管理 ----------
+# ---------- 配置文件管理（使用 SQLite 数据库） ----------
 
 def save_accounts_to_file(accounts_data: list):
-    """保存账户配置到文件"""
-    with open(ACCOUNTS_FILE, 'w', encoding='utf-8') as f:
-        json.dump(accounts_data, f, ensure_ascii=False, indent=2)
-    logger.info(f"[CONFIG] 配置已保存到 {ACCOUNTS_FILE}")
+    """保存账户配置到数据库"""
+    db_save_accounts(accounts_data)
+    logger.info(f"[CONFIG] 配置已保存到数据库 {get_db_path()}")
 
 
 def load_accounts_from_source() -> list:
-    """从环境变量或文件加载账户配置，优先使用环境变量"""
+    """从环境变量或数据库加载账户配置，优先使用环境变量"""
     # 优先从环境变量加载
     env_accounts = os.environ.get('ACCOUNTS_CONFIG')
     if env_accounts:
@@ -333,26 +348,16 @@ def load_accounts_from_source() -> list:
                 logger.warning(f"[CONFIG] 环境变量 ACCOUNTS_CONFIG 为空")
             return accounts_data
         except Exception as e:
-            logger.error(f"[CONFIG] 环境变量加载失败: {str(e)}，尝试从文件加载")
+            logger.error(f"[CONFIG] 环境变量加载失败: {str(e)}，尝试从数据库加载")
 
-    # 从文件加载
-    if os.path.exists(ACCOUNTS_FILE):
-        try:
-            with open(ACCOUNTS_FILE, 'r', encoding='utf-8') as f:
-                accounts_data = json.load(f)
-            if accounts_data:
-                logger.info(f"[CONFIG] 从文件加载配置: {ACCOUNTS_FILE}，共 {len(accounts_data)} 个账户")
-            else:
-                logger.warning(f"[CONFIG] 账户配置为空，请在管理面板添加账户或编辑 {ACCOUNTS_FILE}")
-            return accounts_data
-        except Exception as e:
-            logger.warning(f"[CONFIG] 文件加载失败: {str(e)}，创建空配置")
-
-    # 文件不存在，创建空配置
-    logger.warning(f"[CONFIG] 未找到 {ACCOUNTS_FILE}，已创建空配置文件")
-    logger.info(f"[CONFIG] 💡 请在管理面板添加账户，或直接编辑 {ACCOUNTS_FILE}，或使用批量上传功能，或设置环境变量 ACCOUNTS_CONFIG")
-    save_accounts_to_file([])
-    return []
+    # 从数据库加载
+    accounts_data = db_load_accounts()
+    if accounts_data:
+        logger.info(f"[CONFIG] 从数据库加载配置，共 {len(accounts_data)} 个账户")
+    else:
+        logger.warning(f"[CONFIG] 数据库为空，请在管理面板添加账户")
+        logger.info(f"[CONFIG] 💡 请在管理面板添加账户，或使用批量上传功能，或设置环境变量 ACCOUNTS_CONFIG")
+    return accounts_data
 
 
 def get_account_id(acc: dict, index: int) -> str:
@@ -485,18 +490,9 @@ def delete_account(
     global_stats: dict
 ) -> MultiAccountManager:
     """删除单个账户"""
-    accounts_data = load_accounts_from_source()
-
-    # 过滤掉要删除的账户
-    filtered = [
-        acc for i, acc in enumerate(accounts_data, 1)
-        if get_account_id(acc, i) != account_id
-    ]
-
-    if len(filtered) == len(accounts_data):
+    if not db_delete_account(account_id):
         raise ValueError(f"账户 {account_id} 不存在")
 
-    save_accounts_to_file(filtered)
     return reload_accounts(
         multi_account_mgr,
         http_client,
@@ -520,20 +516,9 @@ def update_account_disabled_status(
     global_stats: dict
 ) -> MultiAccountManager:
     """更新账户的禁用状态"""
-    accounts_data = load_accounts_from_source()
-
-    # 查找并更新账户
-    found = False
-    for i, acc in enumerate(accounts_data, 1):
-        if get_account_id(acc, i) == account_id:
-            acc["disabled"] = disabled
-            found = True
-            break
-
-    if not found:
+    if not db_update_status(account_id, disabled):
         raise ValueError(f"账户 {account_id} 不存在")
 
-    save_accounts_to_file(accounts_data)
     new_mgr = reload_accounts(
         multi_account_mgr,
         http_client,
@@ -547,3 +532,45 @@ def update_account_disabled_status(
     status_text = "已禁用" if disabled else "已启用"
     logger.info(f"[CONFIG] 账户 {account_id} {status_text}")
     return new_mgr
+
+
+def upload_accounts(
+    accounts_data: list,
+    multi_account_mgr: MultiAccountManager,
+    http_client,
+    user_agent: str,
+    account_failure_threshold: int,
+    rate_limit_cooldown_seconds: int,
+    session_cache_ttl_seconds: int,
+    global_stats: dict
+) -> tuple[MultiAccountManager, dict]:
+    """上传账户（插入或更新，不删除现有账户）
+    
+    Returns:
+        (new_manager, stats) - 新的管理器和统计信息 {"added": int, "updated": int}
+    """
+    # 验证账户数据
+    for i, acc in enumerate(accounts_data, 1):
+        required_fields = ["secure_c_ses", "csesidx", "config_id"]
+        missing_fields = [f for f in required_fields if f not in acc or not acc[f]]
+        if missing_fields:
+            raise ValueError(f"账户 {i} 缺少必需字段: {', '.join(missing_fields)}")
+        # 确保有 id
+        if "id" not in acc:
+            acc["id"] = f"account_{i}"
+    
+    # 批量插入或更新
+    stats = db_upsert_accounts(accounts_data)
+    
+    # 重新加载配置
+    new_mgr = reload_accounts(
+        multi_account_mgr,
+        http_client,
+        user_agent,
+        account_failure_threshold,
+        rate_limit_cooldown_seconds,
+        session_cache_ttl_seconds,
+        global_stats
+    )
+    
+    return new_mgr, stats

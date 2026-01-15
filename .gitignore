@@ -39,6 +39,13 @@ data/stats.json
 data/settings.yaml
 accounts.json
 
+# Register machine specific
+register_config.json
+data/accounts.db
+debug_*.html
+.claude/
+.spec-workflow/
+
 # Generated files
 data/images/
 logs/

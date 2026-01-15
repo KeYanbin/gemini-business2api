@@ -95,11 +95,16 @@
                 </div>
 
                 <div class="section">
-                    <div class="section-title">账户状态 ({{ multi_account_mgr.accounts|length }} 个)</div>
+                    <div class="section-title" style="display: flex; justify-content: space-between; align-items: center;">
+                        <span>账户状态 (<span id="account-count">{{ multi_account_mgr.accounts|length }}</span> 个)</span>
+                        <button class="btn" onclick="refreshAccountStatus()" style="font-size: 11px; padding: 4px 10px;">🔄 刷新</button>
+                    </div>
                     <div style="color: #6b6b6b; font-size: 12px; margin-bottom: 12px; padding-left: 4px;">
                         默认过期时间12小时，注意北京时间 • 批量上传使用 <code style="font-size: 11px; background: rgba(0,0,0,0.05); padding: 2px 6px; border-radius: 4px;">script/download-config.js</code> 油猴脚本
                     </div>
-                    {{ account_table(accounts_data) }}
+                    <div id="account-table-container">
+                        {{ account_table(accounts_data) }}
+                    </div>
                 </div>
             </div>
 

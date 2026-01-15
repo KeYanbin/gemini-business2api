@@ -62,7 +62,8 @@ from core.account import (
     load_accounts_from_source,
     update_accounts_config as _update_accounts_config,
     delete_account as _delete_account,
-    update_account_disabled_status as _update_account_disabled_status
+    update_account_disabled_status as _update_account_disabled_status,
+    upload_accounts as _upload_accounts
 )
 
 # 导入 Uptime 追踪器
@@ -271,8 +272,8 @@ app.add_middleware(
     SessionMiddleware,
     secret_key=SESSION_SECRET_KEY,
     max_age=SESSION_EXPIRE_HOURS * 3600,  # 转换为秒
-    same_site="lax",
-    https_only=False  # 本地开发可设为False，生产环境建议True
+    same_site="none",  # 允许跨站请求携带cookie（HF Spaces需要）
+    https_only=True  # HF Spaces 使用 HTTPS
 )
 
 # ---------- Uptime 追踪中间件 ----------
@@ -746,6 +747,55 @@ async def admin_update_config(request: Request, accounts_data: list = Body(...))
         logger.error(f"[CONFIG] 更新配置失败: {str(e)}")
         raise HTTPException(500, f"更新失败: {str(e)}")
 
+# ---------- 账户上传 API（支持远程注册机上传） ----------
+# 注意：此路由必须在 /admin/accounts/{account_id} 之前定义，避免路由匹配冲突
+class UploadAccountsRequest(BaseModel):
+    accounts: List[dict]
+
+@app.post("/admin/accounts/upload")
+async def admin_upload_accounts(
+    request: Request,
+    data: UploadAccountsRequest,
+    x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key")
+):
+    """上传账户（供远程注册机使用，支持 X-Admin-Key 头认证或 Session 认证）"""
+    global multi_account_mgr
+
+    # 认证：优先检查 X-Admin-Key 头，否则检查 Session 登录状态
+    if x_admin_key:
+        if x_admin_key != ADMIN_KEY:
+            logger.warning(f"[UPLOAD] 认证失败 - 无效的 Admin Key")
+            raise HTTPException(401, "Invalid Admin Key")
+        logger.info(f"[UPLOAD] 使用 X-Admin-Key 认证")
+    elif not is_logged_in(request):
+        logger.warning(f"[UPLOAD] 认证失败 - 未登录且无 Admin Key")
+        raise HTTPException(401, "Authentication required")
+
+    if not data.accounts:
+        raise HTTPException(400, "账户列表不能为空")
+
+    try:
+        multi_account_mgr, stats = _upload_accounts(
+            data.accounts, multi_account_mgr, http_client, USER_AGENT,
+            ACCOUNT_FAILURE_THRESHOLD, RATE_LIMIT_COOLDOWN_SECONDS,
+            SESSION_CACHE_TTL_SECONDS, global_stats
+        )
+
+        logger.info(f"[UPLOAD] 上传成功: 新增 {stats['added']}, 更新 {stats['updated']}")
+        return {
+            "status": "success",
+            "message": f"成功上传 {stats['added'] + stats['updated']} 个账户",
+            "added": stats["added"],
+            "updated": stats["updated"],
+            "account_count": len(multi_account_mgr.accounts)
+        }
+    except ValueError as e:
+        logger.error(f"[UPLOAD] 数据验证失败: {str(e)}")
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        logger.error(f"[UPLOAD] 上传失败: {str(e)}")
+        raise HTTPException(500, f"上传失败: {str(e)}")
+
 @app.delete("/admin/accounts/{account_id}")
 @require_login()
 async def admin_delete_account(request: Request, account_id: str):
@@ -1017,6 +1067,14 @@ if PATH_PREFIX:
     @require_login()
     async def admin_enable_account_prefixed(request: Request, account_id: str):
         return await admin_enable_account(request=request, account_id=account_id)
+
+    @app.post(f"/{PATH_PREFIX}/accounts/upload")
+    async def admin_upload_accounts_prefixed(
+        request: Request,
+        data: UploadAccountsRequest,
+        x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key")
+    ):
+        return await admin_upload_accounts(request=request, data=data, x_admin_key=x_admin_key)
 
     @app.get(f"/{PATH_PREFIX}/log")
     @require_login()
@@ -1426,9 +1484,9 @@ async def chat_impl(
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
     }
 
-# ---------- 图片生成处理函数 ----------
-def parse_images_from_response(data_list: list) -> tuple[list, str]:
-    """从API响应中解析图片文件引用
+# ---------- 媒体文件处理函数 ----------
+def parse_media_from_response(data_list: list) -> tuple[list, str]:
+    """从API响应中解析媒体文件引用（图片/视频）
     返回: (file_ids_list, session_name)
     file_ids_list: [{"fileId": str, "mimeType": str}, ...]
     """
@@ -1452,7 +1510,7 @@ def parse_images_from_response(data_list: list) -> tuple[list, str]:
             gc = reply.get("groundedContent", {})
             content = gc.get("content", {})
 
-            # 检查file字段（图片生成的关键）
+            # 检查file字段（媒体生成的关键）
             file_info = content.get("file")
             if file_info and file_info.get("fileId"):
                 file_ids.append({
@@ -1461,6 +1519,15 @@ def parse_images_from_response(data_list: list) -> tuple[list, str]:
                 })
 
     return file_ids, session_name
+
+
+def is_video_mime(mime_type: str) -> bool:
+    """判断是否为视频类型"""
+    return mime_type.startswith("video/")
+
+
+# 向后兼容别名
+parse_images_from_response = parse_media_from_response
 
 
 async def stream_chat_generator(session: str, text_content: str, file_ids: List[str], model_name: str, chat_id: str, created_time: int, account_manager: AccountManager, is_stream: bool = True, request_id: str = "", request: Request = None):
@@ -1548,12 +1615,20 @@ async def stream_chat_generator(session: str, text_content: str, file_ids: List[
                         chunk = create_chunk(chat_id, created_time, model_name, {"content": text}, None)
                         yield f"data: {chunk}\n\n"
 
-            # 提取图片信息（在 async with 块内）
+            # 提取媒体信息（在 async with 块内）
             if json_objects:
-                file_ids, session_name = parse_images_from_response(json_objects)
+                file_ids, session_name = parse_media_from_response(json_objects)
                 if file_ids and session_name:
                     file_ids_info = (file_ids, session_name)
-                    logger.info(f"[IMAGE] [{account_manager.config.account_id}] [req_{request_id}] 检测到{len(file_ids)}张生成图片")
+                    # 统计图片和视频数量
+                    video_count = sum(1 for f in file_ids if is_video_mime(f["mimeType"]))
+                    image_count = len(file_ids) - video_count
+                    media_desc = []
+                    if image_count > 0:
+                        media_desc.append(f"{image_count}张图片")
+                    if video_count > 0:
+                        media_desc.append(f"{video_count}个视频")
+                    logger.info(f"[MEDIA] [{account_manager.config.account_id}] [req_{request_id}] 检测到生成媒体: {', '.join(media_desc)}")
 
         except ValueError as e:
             logger.error(f"[API] [{account_manager.config.account_id}] [req_{request_id}] JSON解析失败: {str(e)}")
@@ -1562,14 +1637,14 @@ async def stream_chat_generator(session: str, text_content: str, file_ids: List[
             logger.error(f"[API] [{account_manager.config.account_id}] [req_{request_id}] 流处理错误 ({error_type}): {str(e)}")
             raise
 
-    # 在 async with 块外处理图片下载（避免占用上游连接）
+    # 在 async with 块外处理媒体下载（避免占用上游连接）
     if file_ids_info:
         file_ids, session_name = file_ids_info
         try:
             base_url = get_base_url(request) if request else ""
             file_metadata = await get_session_file_metadata(account_manager, session_name, http_client, USER_AGENT, request_id)
 
-            # 并行下载所有图片
+            # 并行下载所有媒体文件
             download_tasks = []
             for file_info in file_ids:
                 fid = file_info["fileId"]
@@ -1584,34 +1659,39 @@ async def stream_chat_generator(session: str, text_content: str, file_ids: List[
             # 处理下载结果
             success_count = 0
             for idx, ((fid, mime, _), result) in enumerate(zip(download_tasks, results), 1):
+                is_video = is_video_mime(mime)
+                media_type = "视频" if is_video else "图片"
+                
                 if isinstance(result, Exception):
-                    logger.error(f"[IMAGE] [{account_manager.config.account_id}] [req_{request_id}] 图片{idx}下载失败: {type(result).__name__}: {str(result)[:100]}")
-                    # 降级处理：返回错误提示而不是静默失败
-                    error_msg = f"\n\n⚠️ 图片 {idx} 下载失败\n\n"
+                    logger.error(f"[MEDIA] [{account_manager.config.account_id}] [req_{request_id}] {media_type}{idx}下载失败: {type(result).__name__}: {str(result)[:100]}")
+                    error_msg = f"\n\n⚠️ {media_type} {idx} 下载失败\n\n"
                     chunk = create_chunk(chat_id, created_time, model_name, {"content": error_msg}, None)
                     yield f"data: {chunk}\n\n"
                     continue
 
                 try:
-                    image_url = save_image_to_hf(result, chat_id, fid, mime, base_url, IMAGE_DIR)
-                    logger.info(f"[IMAGE] [{account_manager.config.account_id}] [req_{request_id}] 图片{idx}已保存: {image_url}")
+                    media_url = save_image_to_hf(result, chat_id, fid, mime, base_url, IMAGE_DIR)
+                    logger.info(f"[MEDIA] [{account_manager.config.account_id}] [req_{request_id}] {media_type}{idx}已保存: {media_url}")
                     success_count += 1
 
-                    markdown = f"\n\n![生成的图片]({image_url})\n\n"
+                    # 根据类型生成不同的 markdown
+                    if is_video:
+                        markdown = f"\n\n<video controls src=\"{media_url}\"></video>\n\n"
+                    else:
+                        markdown = f"\n\n![生成的图片]({media_url})\n\n"
                     chunk = create_chunk(chat_id, created_time, model_name, {"content": markdown}, None)
                     yield f"data: {chunk}\n\n"
                 except Exception as save_error:
-                    logger.error(f"[IMAGE] [{account_manager.config.account_id}] [req_{request_id}] 图片{idx}保存失败: {str(save_error)[:100]}")
-                    error_msg = f"\n\n⚠️ 图片 {idx} 保存失败\n\n"
+                    logger.error(f"[MEDIA] [{account_manager.config.account_id}] [req_{request_id}] {media_type}{idx}保存失败: {str(save_error)[:100]}")
+                    error_msg = f"\n\n⚠️ {media_type} {idx} 保存失败\n\n"
                     chunk = create_chunk(chat_id, created_time, model_name, {"content": error_msg}, None)
                     yield f"data: {chunk}\n\n"
 
-            logger.info(f"[IMAGE] [{account_manager.config.account_id}] [req_{request_id}] 图片处理完成: {success_count}/{len(file_ids)} 成功")
+            logger.info(f"[MEDIA] [{account_manager.config.account_id}] [req_{request_id}] 媒体处理完成: {success_count}/{len(file_ids)} 成功")
 
         except Exception as e:
-            logger.error(f"[IMAGE] [{account_manager.config.account_id}] [req_{request_id}] 图片处理失败: {type(e).__name__}: {str(e)[:100]}")
-            # 降级处理：通知用户图片处理失败
-            error_msg = f"\n\n⚠️ 图片处理失败: {type(e).__name__}\n\n"
+            logger.error(f"[MEDIA] [{account_manager.config.account_id}] [req_{request_id}] 媒体处理失败: {type(e).__name__}: {str(e)[:100]}")
+            error_msg = f"\n\n⚠️ 媒体处理失败: {type(e).__name__}\n\n"
             chunk = create_chunk(chat_id, created_time, model_name, {"content": error_msg}, None)
             yield f"data: {chunk}\n\n"
 
@@ -1622,6 +1702,74 @@ async def stream_chat_generator(session: str, text_content: str, file_ids: List[
         final_chunk = create_chunk(chat_id, created_time, model_name, {}, "stop")
         yield f"data: {final_chunk}\n\n"
         yield "data: [DONE]\n\n"
+
+# ---------- 注册机 API 端点（需要登录） ----------
+from core.register_service import register_service
+
+@app.get("/admin/register/status")
+@require_login()
+async def admin_register_status(request: Request):
+    """获取注册机状态"""
+    return register_service.get_status()
+
+@app.get("/admin/register/config")
+@require_login()
+async def admin_register_config(request: Request):
+    """获取注册机配置"""
+    return register_service.get_config()
+
+@app.put("/admin/register/config")
+@require_login()
+async def admin_register_update_config(request: Request, config: dict = Body(...)):
+    """更新注册机配置"""
+    register_service.update_config(config)
+    logger.info(f"[REGISTER] 配置已更新: {config}")
+    return {"status": "success", "config": register_service.get_config()}
+
+@app.post("/admin/register/start")
+@require_login()
+async def admin_register_start(request: Request):
+    """启动注册任务"""
+    if register_service.start():
+        return {"status": "success", "message": "注册任务已启动"}
+    else:
+        raise HTTPException(400, "注册任务正在运行中")
+
+@app.post("/admin/register/stop")
+@require_login()
+async def admin_register_stop(request: Request):
+    """停止注册任务"""
+    if register_service.stop():
+        return {"status": "success", "message": "正在停止注册任务"}
+    else:
+        raise HTTPException(400, "没有正在运行的任务")
+
+# 带PATH_PREFIX的注册机端点
+if PATH_PREFIX:
+    @app.get(f"/{PATH_PREFIX}/register/status")
+    @require_login()
+    async def admin_register_status_prefixed(request: Request):
+        return await admin_register_status(request=request)
+
+    @app.get(f"/{PATH_PREFIX}/register/config")
+    @require_login()
+    async def admin_register_config_prefixed(request: Request):
+        return await admin_register_config(request=request)
+
+    @app.put(f"/{PATH_PREFIX}/register/config")
+    @require_login()
+    async def admin_register_update_config_prefixed(request: Request, config: dict = Body(...)):
+        return await admin_register_update_config(request=request, config=config)
+
+    @app.post(f"/{PATH_PREFIX}/register/start")
+    @require_login()
+    async def admin_register_start_prefixed(request: Request):
+        return await admin_register_start(request=request)
+
+    @app.post(f"/{PATH_PREFIX}/register/stop")
+    @require_login()
+    async def admin_register_stop_prefixed(request: Request):
+        return await admin_register_stop(request=request)
 
 # ---------- 公开端点（无需认证） ----------
 @app.get("/public/uptime")
@@ -1737,6 +1885,27 @@ async def not_found_handler(request: Request, exc: HTTPException):
         content={"detail": "Not Found"}
     )
 
+# ---------- Windows asyncio 异常处理 ----------
+def custom_exception_handler(loop, context):
+    """自定义异常处理器，抑制 Windows 上的无害连接重置错误"""
+    exception = context.get("exception")
+    # 抑制 Windows 上客户端断开连接时的 ConnectionResetError (WinError 10054)
+    if isinstance(exception, ConnectionResetError):
+        return  # 静默忽略
+    # 抑制 OSError [WinError 10038] (socket 已关闭时的操作)
+    if isinstance(exception, OSError) and getattr(exception, 'winerror', None) in (10038, 10054):
+        return  # 静默忽略
+    # 其他异常使用默认处理
+    loop.default_exception_handler(context)
+
 if __name__ == "__main__":
     import uvicorn
+    import sys
+
+    # Windows 平台安装自定义异常处理器
+    if sys.platform == "win32":
+        loop = asyncio.new_event_loop()
+        loop.set_exception_handler(custom_exception_handler)
+        asyncio.set_event_loop(loop)
+
     uvicorn.run(app, host="0.0.0.0", port=7860)
