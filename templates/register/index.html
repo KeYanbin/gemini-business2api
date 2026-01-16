@@ -229,6 +229,13 @@
                         同时保存到本地数据库
                     </label>
                 </div>
+                <div class="setting-item">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="headless">
+                        无头模式（不显示浏览器窗口）
+                    </label>
+                    <div class="hint">启用后浏览器在后台运行，适合服务器部署</div>
+                </div>
                 <button class="btn btn-primary" onclick="saveConfig()" style="width: 100%; margin-top: 8px;">💾 保存配置</button>
             </div>
         </div>
@@ -257,6 +264,7 @@
                 document.getElementById('mail-api').value = config.mail_api || '';
                 document.getElementById('mail-key').value = config.mail_key || '';
                 document.getElementById('save-local').checked = config.save_to_local_db !== false;
+                document.getElementById('headless').checked = config.headless === true;
             } catch (e) {
                 console.error('加载配置失败:', e);
             }
@@ -271,7 +279,8 @@
                 parallel_workers: parseInt(document.getElementById('parallel-workers').value) || 5,
                 mail_api: document.getElementById('mail-api').value,
                 mail_key: document.getElementById('mail-key').value,
-                save_to_local_db: document.getElementById('save-local').checked
+                save_to_local_db: document.getElementById('save-local').checked,
+                headless: document.getElementById('headless').checked
             };
             try {
                 const resp = await fetch('/api/config', {

@@ -3,6 +3,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.common.action_chains import ActionChains
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse, parse_qs
 from datetime import datetime
@@ -37,9 +38,12 @@ if os.path.exists(CONFIG_FILE):
     REMOTE_API_URL = _config.get("remote_api_url", "")
     REMOTE_ADMIN_KEY = _config.get("remote_admin_key", "")
     REMOTE_PATH_PREFIX = _config.get("remote_path_prefix", "")
+    HEADLESS = _config.get("headless", False)  # 无头模式
     print(f"[INFO] 已加载配置: {CONFIG_FILE}")
     if REMOTE_API_URL:
         print(f"[INFO] 远程上传: {REMOTE_API_URL}")
+    if HEADLESS:
+        print(f"[INFO] 无头模式: 已启用")
 else:
     # 默认配置
     TOTAL_ACCOUNTS = 10
@@ -50,6 +54,7 @@ else:
     REMOTE_API_URL = ""
     REMOTE_ADMIN_KEY = ""
     REMOTE_PATH_PREFIX = ""
+    HEADLESS = False  # 无头模式
     print(f"[WARN] 配置文件不存在: {CONFIG_FILE}，使用默认配置")
 
 OUTPUT_DIR = "gemini_accounts"
@@ -84,13 +89,32 @@ NAMES = ["James Smith", "John Johnson", "Robert Williams", "Michael Brown", "Wil
 # 线程安全的计数器和锁
 stats_lock = threading.Lock()
 driver_lock = threading.Lock()  # 驱动创建锁，避免文件冲突
+log_lock = threading.Lock()  # 日志文件写入锁
 progress_counter = 0
 success_counter = 0
 fail_counter = 0
 
+# 日志目录和文件
+LOG_DIR = os.path.join(SCRIPT_DIR, "logs")
+os.makedirs(LOG_DIR, exist_ok=True)
+LOG_FILE = os.path.join(LOG_DIR, f"register_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
+
 def log(msg, level="INFO", worker_id=None):
+    """记录日志到控制台和文件"""
+    timestamp = datetime.now().strftime("%H:%M:%S")
     prefix = f"[W{worker_id}]" if worker_id is not None else ""
-    print(f"{prefix}[{level}] {msg}")
+    log_line = f"[{timestamp}] [{level}] {prefix} {msg}"
+
+    # 控制台输出
+    print(log_line)
+
+    # 写入日志文件（线程安全）
+    with log_lock:
+        try:
+            with open(LOG_FILE, "a", encoding="utf-8") as f:
+                f.write(log_line + "\n")
+        except Exception:
+            pass  # 日志写入失败不影响主流程
 
 def create_email(worker_id=None):
     """创建临时邮箱"""
@@ -107,15 +131,19 @@ def create_email(worker_id=None):
 
 def get_code(email, timeout=60, worker_id=None):
     """获取验证码"""
-    log(f"等待验证码...", worker_id=worker_id)
+    log(f"等待验证码... (邮箱: {email})", worker_id=worker_id)
     start = time.time()
+    check_count = 0
     while time.time() - start < timeout:
+        check_count += 1
         try:
             r = requests.get(f"{MAIL_API}/api/emails", params={"email": email},
                 headers={"X-API-Key": MAIL_KEY}, timeout=10)
             if r.status_code == 200:
-                emails = r.json().get('data', {}).get('emails', [])
+                data = r.json()
+                emails = data.get('data', {}).get('emails', [])
                 if emails:
+                    log(f"收到 {len(emails)} 封邮件，解析验证码...", worker_id=worker_id)
                     html = emails[0].get('html_content') or emails[0].get('content', '')
                     soup = BeautifulSoup(html, 'html.parser')
                     span = soup.find('span', class_='verification-code')
@@ -124,9 +152,23 @@ def get_code(email, timeout=60, worker_id=None):
                         if len(code) == 6:
                             log(f"验证码: {code}", worker_id=worker_id)
                             return code
-        except: pass
-        time.sleep(1.5)  # 缩短轮询间隔
-    log("验证码超时", "ERR", worker_id)
+                    else:
+                        # 尝试其他方式提取验证码
+                        import re
+                        code_match = re.search(r'\b(\d{6})\b', html)
+                        if code_match:
+                            code = code_match.group(1)
+                            log(f"验证码(正则): {code}", worker_id=worker_id)
+                            return code
+                        log(f"邮件中未找到验证码格式", "WARN", worker_id)
+            elif r.status_code != 200:
+                if check_count == 1:
+                    log(f"邮件API返回: {r.status_code}", "WARN", worker_id)
+        except Exception as e:
+            if check_count == 1:
+                log(f"邮件API异常: {e}", "WARN", worker_id)
+        time.sleep(1.5)
+    log(f"验证码超时 ({timeout}s, 检查{check_count}次)", "ERR", worker_id)
     return None
 
 def save_config(email, driver, timeout=10, worker_id=None):
@@ -244,11 +286,11 @@ def upload_to_remote(account_data, worker_id=None):
         log(f"远程上传异常: {e}", "ERR", worker_id)
         return None
 
-def fast_type(element, text, delay=0.03):
+def fast_type(element, text, delay=0.05):
     """快速输入文本，增加稳定性"""
     for c in text:
         element.send_keys(c)
-        time.sleep(delay + random.uniform(0, 0.02))  # 添加随机延迟，更像人类输入
+        time.sleep(delay + random.uniform(0.01, 0.03))  # 添加随机延迟，更像人类输入
 
 def register_single(worker_id):
     """单个worker的注册流程，每个worker独立创建浏览器"""
@@ -260,22 +302,54 @@ def register_single(worker_id):
         log("创建浏览器...", worker_id=worker_id)
         with driver_lock:
             options = uc.ChromeOptions()
-            driver = uc.Chrome(options=options, use_subprocess=True)
+            # 无头模式配置 - 增强反检测
+            if HEADLESS:
+                options.add_argument('--headless=new')  # Chrome 109+ 新版无头模式
+                options.add_argument('--disable-gpu')
+                options.add_argument('--window-size=1920,1080')
+                options.add_argument('--no-sandbox')
+                options.add_argument('--disable-dev-shm-usage')
+                # 增强反检测参数
+                options.add_argument('--disable-blink-features=AutomationControlled')
+                options.add_argument('--disable-infobars')
+                options.add_argument('--disable-extensions')
+                options.add_argument('--disable-popup-blocking')
+                options.add_argument('--ignore-certificate-errors')
+                # 模拟真实用户代理
+                options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+                log("无头模式已启用(增强反检测)", worker_id=worker_id)
+            driver = uc.Chrome(options=options, use_subprocess=True, headless=HEADLESS, version_main=None)
             time.sleep(2)  # 等待驱动完全初始化
-        
+
         start_time = time.time()
-        
+
         # 1. 创建邮箱
         email = create_email(worker_id)
         if not email:
             return None, False, 0
-        
+
         wait = WebDriverWait(driver, 30)
-        
+
         # 2. 访问登录页
         driver.get(LOGIN_URL)
-        time.sleep(3)  # 增加等待页面加载时间
-        
+        time.sleep(2)
+
+        # 无头模式：注入反检测脚本
+        if HEADLESS:
+            driver.execute_script("""
+                // 隐藏 webdriver 属性
+                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                // 模拟真实 Chrome
+                window.chrome = { runtime: {} };
+                // 修改 plugins 长度
+                Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+                // 修改 languages
+                Object.defineProperty(navigator, 'languages', {get: () => ['zh-CN', 'zh', 'en']});
+            """)
+            log("反检测脚本已注入", worker_id=worker_id)
+
+        time.sleep(1)
+
         # 3. 输入邮箱 - 直接使用 XPath
         log("输入邮箱...", worker_id=worker_id)
         inp = None
@@ -288,39 +362,55 @@ def register_single(worker_id):
             return email, False, time.time() - start_time
         
         for attempt in range(5):  # 增加重试次数到5次
-            inp.click()
-            time.sleep(0.5)  # 增加等待时间
-            inp.clear()
-            time.sleep(0.3)
-            
-            # 使用 JavaScript 清空并设置值作为备选方案
-            if attempt >= 2:
-                driver.execute_script("arguments[0].value = '';", inp)
-                time.sleep(0.2)
-            
-            fast_type(inp, email, delay=0.06)  # 增加输入延迟
-            time.sleep(0.8)  # 增加等待时间让输入完成
-            
-            actual_value = inp.get_attribute('value')
-            if actual_value == email:
-                log(f"邮箱: {email}", worker_id=worker_id)
-                break
-            else:
-                log(f"邮箱输入不完整: '{actual_value}' (尝试 {attempt+1}/5)", "WARN", worker_id)
-                # 尝试用 JS 直接设置值并触发事件
-                if attempt >= 3:
-                    driver.execute_script("""
-                        arguments[0].value = arguments[1];
-                        arguments[0].dispatchEvent(new Event('input', { bubbles: true }));
-                        arguments[0].dispatchEvent(new Event('change', { bubbles: true }));
-                    """, inp, email)
-                    time.sleep(0.5)
-                    actual_value = inp.get_attribute('value')
-                    if actual_value == email:
-                        log(f"邮箱(JS): {email}", worker_id=worker_id)
-                        break
+            try:
+                # 确保输入框已聚焦并稳定
+                driver.execute_script("arguments[0].focus();", inp)
+                time.sleep(0.3)
+                inp.click()
+                time.sleep(0.5)
+
+                # 彻底清空输入框
                 inp.clear()
-                time.sleep(0.8)
+                time.sleep(0.2)
+                driver.execute_script("arguments[0].value = '';", inp)
+                time.sleep(0.3)
+
+                # 第一次尝试使用 send_keys，后续使用 JS 方式更稳定
+                if attempt < 2:
+                    fast_type(inp, email, delay=0.08)  # 增加输入延迟
+                    time.sleep(1.2)  # 增加等待时间让 Angular 更新
+                else:
+                    # 使用 JS 直接设置值并触发完整的事件序列
+                    driver.execute_script("""
+                        var el = arguments[0];
+                        var value = arguments[1];
+                        el.focus();
+                        el.value = '';
+
+                        // 模拟真实输入：逐字符触发事件
+                        for (var i = 0; i < value.length; i++) {
+                            el.value = value.substring(0, i + 1);
+                            el.dispatchEvent(new Event('input', { bubbles: true }));
+                        }
+                        el.dispatchEvent(new Event('change', { bubbles: true }));
+                        el.dispatchEvent(new Event('blur', { bubbles: true }));
+                    """, inp, email)
+                    time.sleep(1.0)
+
+                # 等待 Angular 更新后再验证
+                time.sleep(0.5)
+                actual_value = inp.get_attribute('value')
+
+                if actual_value == email:
+                    log(f"邮箱{' (JS)' if attempt >= 2 else ''}: {email}", worker_id=worker_id)
+                    break
+                else:
+                    log(f"邮箱输入不完整: '{actual_value}' (尝试 {attempt+1}/5)", "WARN", worker_id)
+                    time.sleep(0.5)
+
+            except Exception as e:
+                log(f"邮箱输入异常: {e} (尝试 {attempt+1}/5)", "WARN", worker_id)
+                time.sleep(0.5)
         else:
             log(f"邮箱输入失败，跳过: {email}", "ERR", worker_id)
             return email, False, time.time() - start_time
@@ -353,51 +443,101 @@ def register_single(worker_id):
             return email, False, time.time() - start_time
         
         # 6. 输入验证码
-        # 重要：Google 的 OTP 输入框必须用 send_keys 逐字符输入，不能用 JS 设置 value
+        # 重要：Google 的 OTP 输入框需要正确聚焦并触发事件
         time.sleep(2)  # 等待验证码页面加载
         log(f"输入验证码: {code}", worker_id=worker_id)
         code_entered = False
 
-        for attempt in range(3):  # 最多重试3次
+        for attempt in range(5):  # 最多5次尝试
             try:
-                # 方案1：查找 pinInput（Google 标准 OTP 输入框）
+                # 查找 pinInput（Google 标准 OTP 输入框）
                 pin_input = None
                 try:
                     pin_input = WebDriverWait(driver, 10).until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, "input[name='pinInput']"))
+                        EC.element_to_be_clickable((By.CSS_SELECTOR, "input[name='pinInput']"))
                     )
                 except:
-                    # 方案2：查找任意可见的文本输入框
                     try:
                         pin_input = WebDriverWait(driver, 5).until(
-                            EC.visibility_of_element_located((By.CSS_SELECTOR, "input[type='text']"))
+                            EC.element_to_be_clickable((By.CSS_SELECTOR, "input[type='text']"))
                         )
                     except:
                         pass
 
                 if not pin_input:
-                    log(f"未找到验证码输入框，重试 ({attempt+1}/3)...", "WARN", worker_id)
+                    log(f"未找到验证码输入框，重试 ({attempt+1}/5)...", "WARN", worker_id)
                     time.sleep(1)
                     continue
 
-                # 点击第一个显示框或输入框来聚焦
-                try:
-                    first_span = driver.find_element(By.CSS_SELECTOR, "span[data-index='0']")
-                    first_span.click()
-                    time.sleep(0.2)
-                except:
-                    pin_input.click()
-                    time.sleep(0.2)
+                # 首先检查 input 是否已有正确的值（避免不必要的重试）
+                current_value = pin_input.get_attribute('value') or ''
+                if len(current_value) == 6:
+                    log(f"验证码已输入: {current_value}", worker_id=worker_id)
+                    code_entered = True
+                    break
 
-                # 关键：使用 send_keys 逐字符输入，触发页面的键盘事件处理
-                # 不能用 JS 设置 value，否则显示框不会更新！
-                for char in code:
-                    driver.switch_to.active_element.send_keys(char)
-                    time.sleep(0.05 + random.uniform(0, 0.03))  # 模拟人类输入速度
+                # 只在第一次或值不完整时才输入
+                if attempt == 0 or len(current_value) < 6:
+                    # 使用 ActionChains 确保正确聚焦
+                    actions = ActionChains(driver)
 
-                time.sleep(0.5)
+                    # 清空现有内容（如果有的话）
+                    if current_value:
+                        # 先点击输入框确保聚焦
+                        actions.move_to_element(pin_input).click().perform()
+                        time.sleep(0.2)
+                        # 全选并删除
+                        pin_input.send_keys(Keys.CONTROL + "a")
+                        time.sleep(0.1)
+                        pin_input.send_keys(Keys.DELETE)
+                        time.sleep(0.3)
 
-                # 验证输入是否成功：检查 6 个显示框的内容
+                    # 方法1：尝试使用 ActionChains 点击并输入
+                    try:
+                        # 优先点击 span[data-index='0'] 聚焦到第一个位置
+                        first_span = driver.find_element(By.CSS_SELECTOR, "span[data-index='0']")
+                        actions = ActionChains(driver)
+                        actions.move_to_element(first_span).click().perform()
+                        time.sleep(0.3)
+                    except:
+                        # 备用：直接点击 input
+                        actions = ActionChains(driver)
+                        actions.move_to_element(pin_input).click().perform()
+                        time.sleep(0.3)
+
+                    # 逐字符输入验证码（直接向 pin_input 发送，更可靠）
+                    for i, char in enumerate(code):
+                        # 每个字符都确保发送到正确的元素
+                        pin_input.send_keys(char)
+                        time.sleep(0.08 + random.uniform(0.02, 0.05))
+
+                        # 每输入2个字符检查一次，确保输入成功
+                        if (i + 1) % 2 == 0:
+                            check_value = pin_input.get_attribute('value') or ''
+                            if len(check_value) < i + 1:
+                                # 输入可能丢失，重新聚焦
+                                pin_input.click()
+                                time.sleep(0.1)
+
+                    # 触发 input 和 change 事件，确保页面响应
+                    driver.execute_script("""
+                        var el = arguments[0];
+                        el.dispatchEvent(new Event('input', { bubbles: true }));
+                        el.dispatchEvent(new Event('change', { bubbles: true }));
+                        el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+                    """, pin_input)
+
+                # 等待页面处理完成
+                time.sleep(1.5)
+
+                # 优先检查 input 的 value（这是最可靠的）
+                actual_value = pin_input.get_attribute('value') or ''
+                if len(actual_value) == 6:
+                    log(f"验证码已输入: {actual_value}", worker_id=worker_id)
+                    code_entered = True
+                    break
+
+                # 备用：检查 span 显示框
                 spans = driver.find_elements(By.CSS_SELECTOR, "span[data-index]")
                 if spans and len(spans) >= 6:
                     entered_code = ''.join([sp.text for sp in spans[:6]])
@@ -405,27 +545,34 @@ def register_single(worker_id):
                         log(f"验证码已输入: {entered_code}", worker_id=worker_id)
                         code_entered = True
                         break
-                    else:
-                        log(f"验证码显示不完整: '{entered_code}'，重试...", "WARN", worker_id)
-                else:
-                    # 备用验证：检查 input 的 value
-                    actual_value = pin_input.get_attribute('value') if pin_input else ''
-                    if actual_value and len(actual_value) >= 6:
-                        log(f"验证码已输入: {actual_value}", worker_id=worker_id)
-                        code_entered = True
-                        break
-                    log(f"验证码输入不完整: '{actual_value}'，重试...", "WARN", worker_id)
 
-                # 清空重试
-                time.sleep(0.3)
-                try:
-                    pin_input.clear()
-                except:
-                    # 用退格键清空
-                    for _ in range(6):
-                        driver.switch_to.active_element.send_keys(Keys.BACKSPACE)
-                        time.sleep(0.05)
-                time.sleep(0.3)
+                # 如果还是失败，尝试备用方法：直接用 JS 模拟键盘输入
+                if attempt >= 2 and len(actual_value) < 6:
+                    log(f"尝试 JS 输入方法...", "INFO", worker_id)
+                    try:
+                        # 清空并重新输入
+                        driver.execute_script("""
+                            var input = arguments[0];
+                            var code = arguments[1];
+                            input.focus();
+                            input.value = '';
+                            for (var i = 0; i < code.length; i++) {
+                                input.value += code[i];
+                                input.dispatchEvent(new Event('input', { bubbles: true }));
+                            }
+                            input.dispatchEvent(new Event('change', { bubbles: true }));
+                        """, pin_input, code)
+                        time.sleep(1.0)
+                        actual_value = pin_input.get_attribute('value') or ''
+                        if len(actual_value) == 6:
+                            log(f"验证码已输入(JS): {actual_value}", worker_id=worker_id)
+                            code_entered = True
+                            break
+                    except Exception as js_err:
+                        log(f"JS 输入失败: {js_err}", "WARN", worker_id)
+
+                log(f"验证码显示不完整: input='{actual_value}'，重试 ({attempt+1}/5)...", "WARN", worker_id)
+                time.sleep(0.8 + random.uniform(0.2, 0.5))
 
             except Exception as e:
                 log(f"验证码输入尝试 {attempt+1} 失败: {e}", "WARN", worker_id)
@@ -578,8 +725,24 @@ def register_single(worker_id):
                     actual_name = driver.execute_script("return arguments[0].value;", name_inp)
                     if actual_name == name:
                         log(f"姓名: {name}", worker_id=worker_id)
-                        # 提交表单
-                        name_inp.send_keys(Keys.ENTER)
+
+                        # 点击同意按钮（而非仅用 Enter 提交）
+                        try:
+                            # 优先查找 agree-button
+                            agree_btn = driver.find_element(By.CSS_SELECTOR, "button.agree-button")
+                            driver.execute_script("arguments[0].click();", agree_btn)
+                            log(f"点击同意按钮", worker_id=worker_id)
+                        except:
+                            try:
+                                # 备用：查找 type='submit' 的按钮
+                                submit_btn = driver.find_element(By.CSS_SELECTOR, "button[type='submit']")
+                                driver.execute_script("arguments[0].click();", submit_btn)
+                                log(f"点击提交按钮", worker_id=worker_id)
+                            except:
+                                # 最后备用：用 Enter 提交
+                                name_inp.send_keys(Keys.ENTER)
+                                log(f"回车提交", worker_id=worker_id)
+
                         name_entered = True
                         break
                     else:
