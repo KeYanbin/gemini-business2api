@@ -23,7 +23,8 @@ DEFAULT_CONFIG = {
     "parallel_workers": 5,
     "mail_api": "https://mail.chatgpt.org.uk",
     "mail_key": "gpt-test",
-    "save_to_local_db": True
+    "save_to_local_db": True,
+    "headless": False  # 无头模式：不显示浏览器窗口
 }
 
 # 全局状态
@@ -162,14 +163,17 @@ def stop_register():
     return jsonify({"status": "success", "message": "正在停止"})
 
 
+# 保存原始 log 函数引用（避免重复包装）
+_original_log = None
+
 def run_register(config):
     """运行注册任务"""
-    global register_status
-    
+    global register_status, _original_log
+
     try:
         # 动态导入注册模块
         import gemini_register as reg
-        
+
         # 更新注册模块配置
         reg.TOTAL_ACCOUNTS = config["total_accounts"]
         reg.PARALLEL_WORKERS = config["parallel_workers"]
@@ -179,12 +183,15 @@ def run_register(config):
         reg.REMOTE_API_URL = config["remote_api_url"]
         reg.REMOTE_ADMIN_KEY = config["remote_admin_key"]
         reg.REMOTE_PATH_PREFIX = config["remote_path_prefix"]
-        
-        # 重写日志函数
-        original_log = reg.log
+        reg.HEADLESS = config.get("headless", False)  # 无头模式
+
+        # 重写日志函数（只在首次时保存原始引用，避免嵌套包装）
+        if _original_log is None:
+            _original_log = reg.log
+
         def custom_log(msg, level="INFO", worker_id=None):
             add_log(msg, level, worker_id)
-            original_log(msg, level, worker_id)
+            _original_log(msg, level, worker_id)
         reg.log = custom_log
         
         # 运行注册
