@@ -66,6 +66,15 @@
                   </div>
                 </div>
                 <div class="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                  <span>邮件提供商</span>
+                  <HelpTip text="ChatGPT: mail.chatgpt.org.uk（推荐，无需配置）。DuckMail: 需要配置 API 密钥。" />
+                </div>
+                <SelectMenu
+                  v-model="localSettings.basic.mail_provider"
+                  :options="mailProviderOptions"
+                  class="w-full"
+                />
+                <div class="flex items-center justify-between gap-2 text-xs text-muted-foreground">
                   <span>浏览器引擎</span>
                   <HelpTip text="UC: 支持无头/有头，但可能失败。DP: 支持无头/有头，更稳定，推荐使用。" />
                 </div>
@@ -74,13 +83,43 @@
                   :options="browserEngineOptions"
                   class="w-full"
                 />
-                <label class="block text-xs text-muted-foreground">DuckMail API</label>
-                <input
-                  v-model="localSettings.basic.duckmail_base_url"
-                  type="text"
-                  class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
-                  placeholder="https://api.duckmail.sbs"
-                />
+
+                <!-- ChatGPT Mail 配置 -->
+                <template v-if="localSettings.basic.mail_provider === 'chatgpt'">
+                  <label class="block text-xs text-muted-foreground">ChatGPT Mail API</label>
+                  <input
+                    v-model="localSettings.basic.chatgpt_mail_base_url"
+                    type="text"
+                    class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
+                    placeholder="https://mail.chatgpt.org.uk"
+                  />
+                  <label class="block text-xs text-muted-foreground">ChatGPT Mail API 密钥</label>
+                  <input
+                    v-model="localSettings.basic.chatgpt_mail_api_key"
+                    type="text"
+                    class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
+                    placeholder="gpt-test"
+                  />
+                </template>
+
+                <!-- DuckMail 配置 -->
+                <template v-if="localSettings.basic.mail_provider === 'duckmail'">
+                  <label class="block text-xs text-muted-foreground">DuckMail API</label>
+                  <input
+                    v-model="localSettings.basic.duckmail_base_url"
+                    type="text"
+                    class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
+                    placeholder="https://api.duckmail.sbs"
+                  />
+                  <label class="block text-xs text-muted-foreground">DuckMail API 密钥</label>
+                  <input
+                    v-model="localSettings.basic.duckmail_api_key"
+                    type="text"
+                    class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
+                    placeholder="dk_xxx"
+                  />
+                </template>
+
                 <div class="flex items-center justify-between gap-2 text-xs text-muted-foreground">
                   <span>过期刷新窗口（小时）</span>
                   <HelpTip text="当账号距离过期小于等于该值时，会触发自动登录刷新（更新 cookie/session）。" />
@@ -105,13 +144,6 @@
                   type="text"
                   class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
                   placeholder="留空则自动选择"
-                />
-                <label class="block text-xs text-muted-foreground">DuckMail API 密钥</label>
-                <input
-                  v-model="localSettings.basic.duckmail_api_key"
-                  type="text"
-                  class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
-                  placeholder="dk_xxx"
                 />
               </div>
             </div>
@@ -239,6 +271,10 @@ const browserEngineOptions = [
   { label: 'UC - 支持无头/有头', value: 'uc' },
   { label: 'DP - 支持无头/有头（推荐）', value: 'dp' },
 ]
+const mailProviderOptions = [
+  { label: 'ChatGPT Mail（推荐，无需配置）', value: 'chatgpt' },
+  { label: 'DuckMail（需要 API 密钥）', value: 'duckmail' },
+]
 const imageOutputOptions = [
   { label: 'Base64 编码', value: 'base64' },
   { label: 'URL 链接', value: 'url' },
@@ -268,6 +304,9 @@ watch(settings, (value) => {
   next.image_generation = next.image_generation || { enabled: false, supported_models: [], output_format: 'base64' }
   next.image_generation.output_format ||= 'base64'
   next.basic = next.basic || {}
+  next.basic.mail_provider = next.basic.mail_provider || 'chatgpt'
+  next.basic.chatgpt_mail_base_url = next.basic.chatgpt_mail_base_url || 'https://mail.chatgpt.org.uk'
+  next.basic.chatgpt_mail_api_key = next.basic.chatgpt_mail_api_key || 'gpt-test'
   next.basic.duckmail_base_url ||= 'https://api.duckmail.sbs'
   next.basic.duckmail_verify_ssl = next.basic.duckmail_verify_ssl ?? true
   next.basic.browser_engine = next.basic.browser_engine || 'dp'

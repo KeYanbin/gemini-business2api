@@ -100,44 +100,347 @@ class GeminiAutomation:
             options.set_argument("--disable-dev-shm-usage")
             options.set_argument("--no-first-run")
             options.set_argument("--disable-extensions")
-            # 反检测参数
+            # 增强反检测参数
             options.set_argument("--disable-infobars")
             options.set_argument("--enable-features=NetworkService,NetworkServiceInProcess")
+            # 额外的反检测参数
+            options.set_argument("--disable-background-networking")
+            options.set_argument("--disable-background-timer-throttling")
+            options.set_argument("--disable-backgrounding-occluded-windows")
+            options.set_argument("--disable-breakpad")
+            options.set_argument("--disable-component-update")
+            options.set_argument("--disable-default-apps")
+            options.set_argument("--disable-domain-reliability")
+            options.set_argument("--disable-features=TranslateUI,BlinkGenPropertyTrees,IsolateOrigins,site-per-process")
+            options.set_argument("--disable-hang-monitor")
+            options.set_argument("--disable-ipc-flooding-protection")
+            options.set_argument("--disable-popup-blocking")
+            options.set_argument("--disable-prompt-on-repost")
+            options.set_argument("--disable-renderer-backgrounding")
+            options.set_argument("--disable-sync")
+            options.set_argument("--force-color-profile=srgb")
+            options.set_argument("--metrics-recording-only")
+            options.set_argument("--no-first-run")
+            options.set_argument("--password-store=basic")
+            options.set_argument("--use-mock-keychain")
+            options.set_argument("--export-tagged-pdf")
+            # 模拟真实屏幕尺寸
+            options.set_argument("--window-position=0,0")
 
         options.auto_port()
         page = ChromiumPage(options)
         page.set.timeouts(self.timeout)
 
-        # 反检测：注入脚本隐藏自动化特征
-        if self.headless:
-            try:
-                page.run_cdp("Page.addScriptToEvaluateOnNewDocument", source="""
-                    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-                    Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
-                    Object.defineProperty(navigator, 'languages', {get: () => ['zh-CN', 'zh', 'en']});
-                    window.chrome = {runtime: {}};
-
-                    // 额外的反检测措施
-                    Object.defineProperty(navigator, 'maxTouchPoints', {get: () => 1});
-                    Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
-                    Object.defineProperty(navigator, 'vendor', {get: () => 'Google Inc.'});
-
-                    // 隐藏 headless 特征
-                    Object.defineProperty(navigator, 'hardwareConcurrency', {get: () => 8});
-                    Object.defineProperty(navigator, 'deviceMemory', {get: () => 8});
-
-                    // 模拟真实的 permissions
-                    const originalQuery = window.navigator.permissions.query;
-                    window.navigator.permissions.query = (parameters) => (
-                        parameters.name === 'notifications' ?
-                            Promise.resolve({state: Notification.permission}) :
-                            originalQuery(parameters)
-                    );
-                """)
-            except Exception:
-                pass
+        # 反检测：注入全面的 stealth 脚本
+        self._inject_stealth_scripts(page)
 
         return page
+
+    def _inject_stealth_scripts(self, page) -> None:
+        """注入全面的反检测脚本（基于 puppeteer-extra-stealth）"""
+        stealth_js = """
+        // ============ 1. 隐藏 webdriver 属性 ============
+        Object.defineProperty(navigator, 'webdriver', {
+            get: () => undefined,
+            configurable: true
+        });
+
+        // 删除 webdriver 相关痕迹
+        delete navigator.__proto__.webdriver;
+
+        // ============ 2. 模拟真实的 plugins 数组 ============
+        const mockPlugins = {
+            0: {
+                0: {type: "application/x-google-chrome-pdf", suffixes: "pdf", description: "Portable Document Format"},
+                description: "Portable Document Format",
+                filename: "internal-pdf-viewer",
+                length: 1,
+                name: "Chrome PDF Plugin"
+            },
+            1: {
+                0: {type: "application/pdf", suffixes: "pdf", description: ""},
+                description: "",
+                filename: "mhjfbmdgcfjbbpaeojofohoefgiehjai",
+                length: 1,
+                name: "Chrome PDF Viewer"
+            },
+            2: {
+                0: {type: "application/x-nacl", suffixes: "", description: "Native Client Executable"},
+                1: {type: "application/x-pnacl", suffixes: "", description: "Portable Native Client Executable"},
+                description: "",
+                filename: "internal-nacl-plugin",
+                length: 2,
+                name: "Native Client"
+            },
+            length: 3,
+            item: function(i) { return this[i] || null; },
+            namedItem: function(name) {
+                for (let i = 0; i < this.length; i++) {
+                    if (this[i].name === name) return this[i];
+                }
+                return null;
+            },
+            refresh: function() {}
+        };
+        Object.setPrototypeOf(mockPlugins, PluginArray.prototype);
+        Object.defineProperty(navigator, 'plugins', {
+            get: () => mockPlugins,
+            configurable: true
+        });
+
+        // ============ 3. 模拟真实的 mimeTypes ============
+        const mockMimeTypes = {
+            0: {type: "application/pdf", suffixes: "pdf", description: "", enabledPlugin: mockPlugins[1]},
+            1: {type: "application/x-google-chrome-pdf", suffixes: "pdf", description: "Portable Document Format", enabledPlugin: mockPlugins[0]},
+            2: {type: "application/x-nacl", suffixes: "", description: "Native Client Executable", enabledPlugin: mockPlugins[2]},
+            3: {type: "application/x-pnacl", suffixes: "", description: "Portable Native Client Executable", enabledPlugin: mockPlugins[2]},
+            length: 4,
+            item: function(i) { return this[i] || null; },
+            namedItem: function(name) {
+                for (let i = 0; i < this.length; i++) {
+                    if (this[i].type === name) return this[i];
+                }
+                return null;
+            }
+        };
+        Object.setPrototypeOf(mockMimeTypes, MimeTypeArray.prototype);
+        Object.defineProperty(navigator, 'mimeTypes', {
+            get: () => mockMimeTypes,
+            configurable: true
+        });
+
+        // ============ 4. 完整的 chrome 对象 ============
+        window.chrome = {
+            app: {
+                isInstalled: false,
+                InstallState: {DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed'},
+                RunningState: {CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running'}
+            },
+            runtime: {
+                OnInstalledReason: {CHROME_UPDATE: 'chrome_update', INSTALL: 'install', SHARED_MODULE_UPDATE: 'shared_module_update', UPDATE: 'update'},
+                OnRestartRequiredReason: {APP_UPDATE: 'app_update', OS_UPDATE: 'os_update', PERIODIC: 'periodic'},
+                PlatformArch: {ARM: 'arm', ARM64: 'arm64', MIPS: 'mips', MIPS64: 'mips64', X86_32: 'x86-32', X86_64: 'x86-64'},
+                PlatformNaclArch: {ARM: 'arm', MIPS: 'mips', MIPS64: 'mips64', X86_32: 'x86-32', X86_64: 'x86-64'},
+                PlatformOs: {ANDROID: 'android', CROS: 'cros', LINUX: 'linux', MAC: 'mac', OPENBSD: 'openbsd', WIN: 'win'},
+                RequestUpdateCheckStatus: {NO_UPDATE: 'no_update', THROTTLED: 'throttled', UPDATE_AVAILABLE: 'update_available'},
+                connect: function() {},
+                sendMessage: function() {}
+            },
+            csi: function() { return {}; },
+            loadTimes: function() {
+                return {
+                    commitLoadTime: Date.now() / 1000 - Math.random() * 2,
+                    connectionInfo: 'h2',
+                    finishDocumentLoadTime: Date.now() / 1000 - Math.random(),
+                    finishLoadTime: Date.now() / 1000 - Math.random() * 0.5,
+                    firstPaintAfterLoadTime: 0,
+                    firstPaintTime: Date.now() / 1000 - Math.random() * 1.5,
+                    navigationType: 'Other',
+                    npnNegotiatedProtocol: 'unknown',
+                    requestTime: Date.now() / 1000 - Math.random() * 3,
+                    startLoadTime: Date.now() / 1000 - Math.random() * 2.5,
+                    wasAlternateProtocolAvailable: false,
+                    wasFetchedViaSpdy: true,
+                    wasNpnNegotiated: true
+                };
+            }
+        };
+
+        // ============ 5. 语言和平台属性 ============
+        Object.defineProperty(navigator, 'languages', {
+            get: () => ['zh-CN', 'zh', 'en-US', 'en'],
+            configurable: true
+        });
+        Object.defineProperty(navigator, 'platform', {
+            get: () => 'Win32',
+            configurable: true
+        });
+        Object.defineProperty(navigator, 'vendor', {
+            get: () => 'Google Inc.',
+            configurable: true
+        });
+        Object.defineProperty(navigator, 'maxTouchPoints', {
+            get: () => 0,
+            configurable: true
+        });
+        Object.defineProperty(navigator, 'hardwareConcurrency', {
+            get: () => 8,
+            configurable: true
+        });
+        Object.defineProperty(navigator, 'deviceMemory', {
+            get: () => 8,
+            configurable: true
+        });
+
+        // ============ 6. 权限 API 模拟 ============
+        const originalQuery = window.navigator.permissions.query;
+        window.navigator.permissions.query = (parameters) => {
+            if (parameters.name === 'notifications') {
+                return Promise.resolve({state: 'prompt', onchange: null});
+            }
+            if (parameters.name === 'push') {
+                return Promise.resolve({state: 'prompt', onchange: null});
+            }
+            if (parameters.name === 'midi') {
+                return Promise.resolve({state: 'prompt', onchange: null});
+            }
+            return originalQuery.call(navigator.permissions, parameters);
+        };
+
+        // ============ 7. WebGL 指纹伪装 ============
+        const getParameterProxyHandler = {
+            apply: function(target, thisArg, args) {
+                const param = args[0];
+                const gl = thisArg;
+                // UNMASKED_VENDOR_WEBGL
+                if (param === 37445) {
+                    return 'Google Inc. (NVIDIA)';
+                }
+                // UNMASKED_RENDERER_WEBGL
+                if (param === 37446) {
+                    return 'ANGLE (NVIDIA, NVIDIA GeForce GTX 1660 SUPER Direct3D11 vs_5_0 ps_5_0, D3D11)';
+                }
+                return target.apply(thisArg, args);
+            }
+        };
+
+        const originalGetParameter = WebGLRenderingContext.prototype.getParameter;
+        WebGLRenderingContext.prototype.getParameter = new Proxy(originalGetParameter, getParameterProxyHandler);
+
+        if (typeof WebGL2RenderingContext !== 'undefined') {
+            const originalGetParameter2 = WebGL2RenderingContext.prototype.getParameter;
+            WebGL2RenderingContext.prototype.getParameter = new Proxy(originalGetParameter2, getParameterProxyHandler);
+        }
+
+        // ============ 8. Canvas 指纹随机化 ============
+        const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
+        HTMLCanvasElement.prototype.toDataURL = function(type) {
+            if (type === 'image/png' || type === undefined) {
+                const context = this.getContext('2d');
+                if (context) {
+                    const imageData = context.getImageData(0, 0, this.width, this.height);
+                    for (let i = 0; i < imageData.data.length; i += 4) {
+                        // 对每个像素添加微小的随机噪声
+                        imageData.data[i] = imageData.data[i] ^ (Math.random() > 0.99 ? 1 : 0);
+                    }
+                    context.putImageData(imageData, 0, 0);
+                }
+            }
+            return originalToDataURL.apply(this, arguments);
+        };
+
+        const originalToBlob = HTMLCanvasElement.prototype.toBlob;
+        HTMLCanvasElement.prototype.toBlob = function(callback, type, quality) {
+            if (type === 'image/png' || type === undefined) {
+                const context = this.getContext('2d');
+                if (context) {
+                    const imageData = context.getImageData(0, 0, this.width, this.height);
+                    for (let i = 0; i < imageData.data.length; i += 4) {
+                        imageData.data[i] = imageData.data[i] ^ (Math.random() > 0.99 ? 1 : 0);
+                    }
+                    context.putImageData(imageData, 0, 0);
+                }
+            }
+            return originalToBlob.apply(this, arguments);
+        };
+
+        // ============ 9. AudioContext 指纹随机化 ============
+        if (typeof AudioContext !== 'undefined') {
+            const originalCreateOscillator = AudioContext.prototype.createOscillator;
+            AudioContext.prototype.createOscillator = function() {
+                const oscillator = originalCreateOscillator.apply(this, arguments);
+                oscillator.frequency.value = oscillator.frequency.value + (Math.random() - 0.5) * 0.01;
+                return oscillator;
+            };
+        }
+
+        // ============ 10. 隐藏 Headless 特征 ============
+        // 覆盖 User-Agent 中可能的 HeadlessChrome 标记（备用）
+        // 注意：必须先保存原始值，避免在 getter 中访问自身导致无限递归
+        const originalUserAgent = navigator.userAgent;
+        Object.defineProperty(navigator, 'userAgent', {
+            get: () => originalUserAgent.replace('HeadlessChrome', 'Chrome'),
+            configurable: true
+        });
+
+        // 隐藏 window.outerWidth/outerHeight 为 0 的问题
+        if (window.outerWidth === 0) {
+            Object.defineProperty(window, 'outerWidth', {
+                get: () => window.innerWidth,
+                configurable: true
+            });
+        }
+        if (window.outerHeight === 0) {
+            Object.defineProperty(window, 'outerHeight', {
+                get: () => window.innerHeight + 85,
+                configurable: true
+            });
+        }
+
+        // ============ 11. 屏幕属性 ============
+        Object.defineProperty(screen, 'colorDepth', {
+            get: () => 24,
+            configurable: true
+        });
+        Object.defineProperty(screen, 'pixelDepth', {
+            get: () => 24,
+            configurable: true
+        });
+
+        // ============ 12. 连接信息 ============
+        if (navigator.connection === undefined) {
+            Object.defineProperty(navigator, 'connection', {
+                get: () => ({
+                    effectiveType: '4g',
+                    rtt: 50,
+                    downlink: 10,
+                    saveData: false
+                }),
+                configurable: true
+            });
+        }
+
+        // ============ 13. Brave 浏览器检测绕过 ============
+        Object.defineProperty(navigator, 'brave', {
+            get: () => undefined,
+            configurable: true
+        });
+
+        // ============ 14. 电池 API ============
+        if (navigator.getBattery) {
+            navigator.getBattery = () => Promise.resolve({
+                charging: true,
+                chargingTime: 0,
+                dischargingTime: Infinity,
+                level: 1,
+                addEventListener: () => {},
+                removeEventListener: () => {}
+            });
+        }
+
+        // ============ 15. 隐藏 CDP (Chrome DevTools Protocol) ============
+        // 删除可能暴露自动化的调试属性
+        delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
+        delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
+        delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
+
+        // 清理 iframe 中的检测
+        const originalAttachShadow = Element.prototype.attachShadow;
+        Element.prototype.attachShadow = function() {
+            if (arguments[0] && arguments[0].mode === 'open') {
+                arguments[0] = { mode: 'closed' };
+            }
+            return originalAttachShadow.apply(this, arguments);
+        };
+
+        console.log('[Stealth] Anti-detection scripts loaded successfully');
+        """
+
+        try:
+            page.run_cdp("Page.addScriptToEvaluateOnNewDocument", source=stealth_js)
+            self._log("info", "stealth scripts injected successfully")
+        except Exception as e:
+            self._log("warning", f"failed to inject stealth scripts: {e}")
 
     def _run_flow(self, page, email: str, mail_client) -> dict:
         """执行登录流程"""
@@ -151,6 +454,9 @@ class GeminiAutomation:
 
         page.get(AUTH_HOME_URL, timeout=self.timeout)
         time.sleep(2)
+
+        # 模拟真人鼠标移动
+        self._simulate_mouse_movement(page)
 
         # 设置两个关键 Cookie
         try:
@@ -175,7 +481,11 @@ class GeminiAutomation:
         login_hint = quote(email, safe="")
         login_url = f"https://auth.business.gemini.google/login/email?continueUrl=https%3A%2F%2Fbusiness.gemini.google%2F&loginHint={login_hint}&xsrfToken={DEFAULT_XSRF_TOKEN}"
         page.get(login_url, timeout=self.timeout)
-        time.sleep(5)
+
+        # 模拟真人等待和鼠标移动
+        time.sleep(3)
+        self._simulate_mouse_movement(page)
+        time.sleep(2)
 
         # Step 2: 检查当前页面状态
         current_url = page.url
@@ -307,6 +617,11 @@ class GeminiAutomation:
         """点击发送验证码按钮（如果需要）"""
         time.sleep(2)
 
+        # 首先检查是否已经在验证码输入页面（Google 可能已自动发送验证码）
+        if self._is_on_code_input_page(page):
+            self._log("info", "Already on verification code input page, code auto-sent")
+            return True
+
         # 方法1: 直接通过ID查找
         direct_btn = page.ele("#sign-in-with-email", timeout=5)
         if direct_btn:
@@ -331,10 +646,43 @@ class GeminiAutomation:
         except Exception:
             pass
 
-        # 检查是否已经在验证码输入页面
-        code_input = page.ele("css:input[jsname='ovqh0b']", timeout=2) or page.ele("css:input[name='pinInput']", timeout=1)
-        if code_input:
+        # 再次检查是否已经在验证码输入页面（可能在查找过程中页面已跳转）
+        if self._is_on_code_input_page(page):
+            self._log("info", "Now on verification code input page")
             return True
+
+        return False
+
+    def _is_on_code_input_page(self, page) -> bool:
+        """检查是否在验证码输入页面"""
+        # 使用多种选择器检测验证码输入框
+        code_input_selectors = [
+            "css:input[jsname='ovqh0b']",
+            "css:input[name='pinInput']",
+            "css:input[type='tel']",
+            "css:input[autocomplete='one-time-code']",
+            "css:input[inputmode='numeric']",
+            "css:input[maxlength='6']",
+        ]
+
+        for selector in code_input_selectors:
+            try:
+                el = page.ele(selector, timeout=1)
+                if el:
+                    self._log("info", f"Code input detected with selector: {selector}")
+                    return True
+            except Exception:
+                continue
+
+        # 检查页面文本是否包含验证码相关关键词
+        try:
+            page_text = page.html or ""
+            code_page_keywords = ["输入验证码", "Enter the code", "Verification code", "验证码已发送", "code sent"]
+            if any(kw in page_text for kw in code_page_keywords):
+                self._log("info", "Code input page detected by keywords")
+                return True
+        except Exception:
+            pass
 
         return False
 
@@ -345,12 +693,15 @@ class GeminiAutomation:
             "css:input[type='tel']",
             "css:input[name='pinInput']",
             "css:input[autocomplete='one-time-code']",
+            "css:input[inputmode='numeric']",
+            "css:input[maxlength='6']",
         ]
         for _ in range(timeout // 2):
             for selector in selectors:
                 try:
                     el = page.ele(selector, timeout=1)
                     if el:
+                        self._log("info", f"Code input found: {selector}")
                         return el
                 except Exception:
                     continue
@@ -543,6 +894,30 @@ class GeminiAutomation:
 
     @staticmethod
     def _get_ua() -> str:
-        """生成随机User-Agent"""
-        v = random.choice(["120.0.0.0", "121.0.0.0", "122.0.0.0"])
+        """生成随机User-Agent（使用更新的浏览器版本）"""
+        # 使用 2024-2025 年常见的 Chrome 版本
+        v = random.choice(["121.0.6167.85", "122.0.6261.94", "123.0.6312.58", "124.0.6367.60", "125.0.6422.76"])
         return f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{v} Safari/537.36"
+
+    def _human_delay(self, min_ms: int = 50, max_ms: int = 150) -> None:
+        """模拟真人的随机延迟"""
+        delay = random.uniform(min_ms / 1000, max_ms / 1000)
+        time.sleep(delay)
+
+    def _human_type(self, element, text: str) -> None:
+        """模拟真人打字（每个字符之间有随机延迟）"""
+        for char in text:
+            element.input(char)
+            self._human_delay(30, 120)
+
+    def _simulate_mouse_movement(self, page) -> None:
+        """模拟随机鼠标移动（增加真实性）"""
+        try:
+            # 在页面上随机移动几次鼠标
+            for _ in range(random.randint(2, 4)):
+                x = random.randint(100, 800)
+                y = random.randint(100, 600)
+                page.run_cdp("Input.dispatchMouseEvent", type="mouseMoved", x=x, y=y)
+                self._human_delay(100, 300)
+        except Exception:
+            pass
